@@ -1,0 +1,351 @@
+unit Unit1;
+
+interface
+
+uses
+  Windows, Messages, SysUtils, Variants, Classes, Graphics, Controls, Forms,
+  Dialogs, StdCtrls, SimpleDs, ExtCtrls;
+
+const
+  WM_AFTER_SHOW = WM_USER + 300;
+  WM_AFTER_CREATE = WM_USER + 301;
+
+type
+  TfmPhoneCharge = class(TForm)
+    Button1: TButton;
+    Button2: TButton;
+    Memo1: TMemo;
+    Edit1: TEdit;
+    Label1: TLabel;
+    procedure Button2Click(Sender: TObject);
+    procedure FormShow(Sender: TObject);
+    procedure Button1Click(Sender: TObject);
+    procedure saveHD;
+    procedure saveDT;
+    procedure saveJrn;
+  private
+    { Private declarations }
+    procedure WmAfterShow(var Msg: TMessage); message WM_AFTER_SHOW;
+  public
+    { Public declarations }
+    phonepscd,phoneitemcd: String;
+    newtrno,rsvno,trdesc: String;
+    trdt: TDate;
+    trtm: String;
+    running: Boolean;
+    newseq: Integer;
+    callcost: Double;
+    txtfile: TStrings;
+  end;
+
+var
+  fmPhoneCharge: TfmPhoneCharge;
+
+
+
+implementation
+
+uses Unit2, collection, dbfunc, fofunc, genfunc;
+
+{$R *.dfm}
+
+procedure TfmPhoneCharge.Button1Click(Sender: TObject);
+var call: TSimpleDataSet;
+    id,res: Integer;
+    sthk1,sthk2,sthk3,strcmd,oldroomst : String;
+    a,b: String;
+    tryagain: Boolean;
+begin
+
+  Memo1.Lines.Clear;
+  
+  if FileExists('ipbx.log') = True then begin
+    RenameFile('ipbx.log','ipbx-'+FormatDateTime('ddmmyyhhnn',Now)+'.log');
+  end;
+
+
+  tryagain := True;
+
+  if dm.mySQL1.Connected = False then begin
+    dm.mySQL1.LoginPrompt := False;
+    dm.mySQL1.Params.Clear;
+    dm.mySQL1.Params.Append('Database='+txtfile.Strings[1]);
+    dm.mySQL1.Params.Append('User_Name=apps');
+    dm.mySQL1.Params.Append('Password=AlfamartSerayu123');
+    dm.mySQL1.Params.Append('HostName='+Edit1.Text);
+    dm.mySQL1.Params.Append('ConnectionTimeOut=5000');
+
+    while tryagain=True do begin
+
+      try
+        tryagain := False;
+        Application.ProcessMessages;
+        dm.mySQL1.Connected := True;
+      except
+        Application.ProcessMessages;
+        Memo1.Lines.Add(FormatDateTime('ddmmyyy-hhnnss',Now)+' Connection error');
+        tryagain := True;
+        Memo1.Lines.SaveToFile('ipbx.log');
+      end;
+
+    end;
+
+    if dm.mySQL1.Connected then begin
+      Memo1.Lines.Add('Server '+txtfile.Strings[0]+ ' connected.');
+      Memo1.Lines.Add('Database name: '+txtfile.Strings[1]+'.');
+      Memo1.Lines.Add('Press `Start` button to start logging.');
+      phonepscd := GetDataStr('select pscdphone from iassystem','pscdphone');
+      phoneitemcd := GetDataStr('select itemcdphone from iassystem','itemcdphone');
+
+    end;
+
+    //try
+      //mySQL1.Connected := True;
+    //except
+      //ShowMessage('Failed to connect. Check hostname');
+      //Exit;
+    //end;
+  end;
+
+
+
+
+
+
+
+  Button1.Enabled := False;
+  running := True;
+
+  Memo1.Lines.Add(FormatDateTime('ddmmyyy-hhnnss',Now)+' Start logging.');
+
+  while running do begin
+
+    Application.ProcessMessages;
+
+    call := TSimpleDataSet.Create(Self);
+
+    try
+      call.Connection := dm.mySQL1;
+      call.DataSet.CommandText := 'select * from tms2fo where flag=1';
+      call.Open;
+
+      if call.RecordCount > 0 then begin
+        call.First;
+        while not call.Eof do begin
+          id := call['id'];
+          if call['code'] = 'C' then begin
+
+            newtrno:= GetNextTrNo(phonepscd);
+            rsvno := GetDataStr('select rsvno from fofrsv where rsvst=''R'' and roomno='+QuotedStr(call['room']),'rsvno');
+            trdesc := 'Phone '+call['note']+' '+call['duration'];
+            trdt := call['date'];
+            trtm := call['time'];
+            Memo1.Lines.Add(FormatDateTime('ddmmyyy-hhnnss',Now)+' ROOM CHARGE: '+call['room'] + ' ' +FloatToStr(call['cost']));
+            newseq := GetDataInt('select max(seq)+1 as lastseq from iafjrndt','lastseq');
+            callcost := call['cost'] + call['service']+call['tax'];
+            saveHD;
+            saveDT;
+            saveJrn;
+
+            SetNextTrNo(phonepscd);
+
+          end;
+
+          if call['code'] = 'R' then begin
+
+            a := FormatDateTime('yyyy-mm-dd',call['date']);
+            b := FormatDateTime('yyyy-mm-dd',call['timestamp']);
+
+            if FormatDateTime('yyyy-mm-dd',call['date']) <> FormatDateTime('yyyy-mm-dd',call['timestamp']) then begin
+              Memo1.Lines.Add(FormatDateTime('ddmmyyy-hhnnss',Now)+' Date and TimeStamp not match... skipped. (id='+IntToStr(id)+')');
+              WriteChangesLog('starsys','-','-',call['room'],'roomst',oldroomst,sthk1+sthk2+sthk3,getFOPrd,getFOTime,'Date and TimeStamp not match. Skipped.','Change Status');
+              SQLExecEx('update tms2fo set flag=0 where id='+IntToStr(id));
+              call.Next;
+              Continue;
+            end;
+
+
+            oldroomst := GetDataStr('select trim(concat(roomsthk1,roomsthk2,roomsthk3)) as oldroomst from fosroom','oldroomst');
+
+            case StrToInt(call['type']) of
+              1 : begin
+                    sthk1 := 'V';
+                    sthk2 := 'C';
+                    sthk3 := 'N';
+                  end;
+
+              2 : begin
+                    sthk1 := 'O';
+                    sthk2 := 'C';
+                    sthk3 := 'N';
+                  end;
+
+              3 : begin
+                    sthk1 := 'V';
+                    sthk2 := 'C';
+                    sthk3 := 'I';
+                  end;
+
+              4 : begin
+                    sthk1 := 'O';
+                    sthk2 := 'C';
+                    sthk3 := 'I';
+                  end;
+            end;
+
+            strcmd := 'update fosroom set roomsthk1 = ' + QuotedStr(sthk1)+ ',roomsthk2 = ' + QuotedStr(sthk2) + ',roomsthk3 = ' + QuotedStr(sthk3) +
+                          ' where roomno = ' + QuotedStr(call['room']);
+
+            res := SQLExecEx(strcmd);
+
+            Memo1.Lines.Add(FormatDateTime('ddmmyyy-hhnnss',Now)+' ROOM STATUS: '+ call['room'] + ' --> ' +oldroomst+ ' --> ' +sthk1+sthk2+sthk3);
+
+
+            WriteChangesLog('starsys','fosroom','roomno',call['room'],'roomst',oldroomst,sthk1+sthk2+sthk3,getFOPrd,getFOTime,'Room Status by Phone','Change Status');
+
+          end;
+
+          SQLExecEx('update tms2fo set flag=0 where id='+IntToStr(id));
+          call.Next;
+        end;
+        Memo1.Lines.SaveToFile('ipbx.log');
+      end
+      else begin
+        Memo1.Lines.Add(FormatDateTime('ddmmyyy-hhnnss',Now)+' none');
+        Memo1.Lines.SaveToFile('ipbx.log');
+      end;
+    finally
+
+      call.Free;
+    end;
+
+    Sleep(5000);
+  end;
+
+  Button1.Enabled := True;
+  Memo1.Lines.Add(FormatDateTime('ddmmyyy-hhnnss',Now)+' Logging stopped.');
+
+end;
+
+procedure TfmPhoneCharge.saveHD;
+var head: TiafjrnHD;
+begin
+  //
+
+  head := TiafjrnHD.Create;
+  try
+    head.outlet := phonepscd;
+    head.trno := newtrno;
+    head.subtrno := 'A';
+    head.trno1 := phonepscd;
+    head.subtrno1 := 'A';
+    head.rsvno := rsvno;
+    head.trdesc := trdesc;
+    head.subrsvno := 'A';
+    head.trdt := trdt;
+    head.trtm := trtm;
+    head.currcd := 'IDR';
+    head.currbs1 := 1;
+    head.currbs2 := 1;
+    head.disccd := '0';
+    head.pax := 1;
+    head.active := 1;
+    head.slstp := 1;
+
+    head.saveHD;
+  finally
+    head.Free;
+  end;
+
+
+
+end;
+
+procedure TfmPhoneCharge.Button2Click(Sender: TObject);
+begin
+  Memo1.Lines.Add(FormatDateTime('ddmmyyy-hhnnss',Now)+' Stopping...');
+  running := False;
+end;
+
+procedure TfmPhoneCharge.FormShow(Sender: TObject);
+begin
+  txtfile := TStringList.Create;
+  if FileExists('hostn.txt') then begin
+    txtfile.LoadFromFile('hostn.txt');
+    Edit1.Text := Trim(txtfile.Strings[0]);
+  end
+  else begin
+    Edit1.Text := 'localhost';
+  end;
+
+
+  PostMessage(Self.Handle, WM_AFTER_SHOW, 0, 0);
+  //Button1.Click;
+
+end;
+
+procedure TfmPhoneCharge.saveDT;
+var dtl : TiafjrnDT;
+begin
+  //
+  dtl := TiafjrnDT.Create;
+  try
+    dtl.trdt := getFOPrd;
+    dtl.seq := newseq;
+    dtl.pscd := phonepscd;
+    dtl.trno := newtrno;
+    dtl.trno1 := newtrno;
+    dtl.subtrno := 'A';
+    dtl.itemcd  := phoneitemcd;
+    dtl.itemseq := newseq;
+    dtl.qty := 1;
+    dtl.discpct := 0;
+    dtl.trdesc := trdesc;
+    dtl.usercrt := dm.UserID;
+    dtl.waitercd := '';
+    dtl.cono := '';
+    dtl.saveDT;
+  finally
+    dtl.Free;
+  end;
+end;
+
+procedure TfmPhoneCharge.saveJrn;
+var calcA: Tcalcamt;
+begin
+  //
+    calcA := Tcalcamt.Create;
+    try
+      calcA.trno := newtrno;
+      calcA.trno1 := newtrno;
+      calcA.seq := newseq;
+      calcA.outletcd := phonepscd;
+      calcA.itemcd := phoneitemcd;
+      calcA.qty := 1;
+      calcA.disc := 0;
+      calcA.nslstp := 1;
+      calcA.price := callcost;
+      //calcA.pricenett := hitungAmtnett(callcost,phoneitemcd,phonepscd);
+      calcA.pricenett := callcost;
+      calcA.nett := False;
+      calcA.manualprice := True;
+
+      calcA.rsvno := rsvno;
+      calcA.trno1 := newtrno;
+      calcA.subrsvno := 'A';
+      calcA.trdesc := trdesc;
+      calcA.trdesccr := trdesc;
+      calcA.trdesc2 := trdesc;
+      calcA.CalcAmt2;
+    finally
+      calcA.Free;
+    end;
+
+end;
+
+procedure TfmPhoneCharge.WmAfterShow(var Msg: TMessage);
+begin
+  Button1.Click;
+end;
+
+end.
